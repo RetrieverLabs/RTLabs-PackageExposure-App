@@ -1,12 +1,12 @@
-🧠 RetrieverLabs Package Exposure Analyzer
+# 🧠 RetrieverLabs Package Exposure Analyzer
 A simple security tool that analyzes npm packages for supply chain risk and exposure.
 
-🌐 Live Tool
+## 🌐 Live Tool
 👉 [https://package-intel.streamlit.app/](https://package-intel.streamlit.app/)
 
 Use it directly in your browser — no install needed.
 
-🔍 What it does
+## 🔍 What it does
 Paste a list of npm packages and the tool will:
 
 Check OSV vulnerability data
@@ -16,10 +16,10 @@ Identify dependencies (optional 1-level view)
 Generate Splunk IOC wildcards
 Calculate a simple risk score (High / Medium / Low)
 
-🧪 Example input
+## 🧪 Example input
 lodash, express, react, axios, @tanstack/react-router
 
-⚡ Output
+## ⚡ Output
 For each package you get:
 
 Risk level
@@ -32,7 +32,7 @@ Latest npm version
 Download volume (30 days)
 Dependencies (optional)
 
-🎯 Purpose
+## 🎯 Purpose
 To speed up software supply chain investigations by quickly identifying:
 
 Vulnerable npm packages
@@ -40,15 +40,15 @@ Widely used/high exposure libraries
 Dependency-based attack surface
 Ready-to-use Splunk hunting indicators
 
-🔮 Future improvements
+## 🔮 Future improvements
 Dependency graph view (multi-level)
 CSV / JSON export
 Async bulk processing
 Top-risk clustering dashboard
 Scheduled scanning mode
 
-⚠️ Disclaimer
+## ⚠️ Disclaimer
 For defensive security and authorized use only.
 
-🏷️ Built by
+## 🏷️ Built by
 RetrieverLabs
