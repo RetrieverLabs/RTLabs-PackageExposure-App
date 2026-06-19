@@ -2,7 +2,7 @@
 A simple security tool that analyzes npm packages for supply chain risk and exposure.
 
 🌐 Live Tool
-👉 ([https://package-intel.streamlit.app/](https://package-intel.streamlit.app/)
+👉 [https://package-intel.streamlit.app/](https://package-intel.streamlit.app/)
 
 Use it directly in your browser — no install needed.
 
