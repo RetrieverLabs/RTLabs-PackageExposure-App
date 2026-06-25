@@ -6,6 +6,7 @@ import time
 # =========================================================
 # UI HEADER
 # =========================================================
+
 st.set_page_config(page_title="RetrieverLabs", layout="wide")
 
 st.markdown(
@@ -23,41 +24,20 @@ st.markdown(
 # =========================================================
 # TOGGLES
 # =========================================================
+
 show_deps = st.checkbox("Enable Dependency View (1-level only)")
 expand_ioc = st.checkbox("Expand IOC with dependencies")
 
-st.caption("OSV + npm registry + exposure signals + dependency surface + IOC export")
+st.caption("OSV + npm + PyPI registry + exposure signals + dependency surface + IOC export")
 
 # =========================================================
 # HELPERS
 # =========================================================
-def format_number(n):
-    if n is None:
-        return "0"
-    if n >= 1_000_000:
-        return f"{n/1_000_000:.1f}M"
-    if n >= 1_000:
-        return f"{n/1_000:.1f}K"
-    return str(n)
 
-
-def risk_score(osv, downloads, exists):
-    score = 0
-
-    if osv["is_malicious"]:
-        score += 70
-
-    if downloads > 1_000_000:
-        score += 15
-    elif downloads > 100_000:
-        score += 10
-    elif downloads > 10_000:
-        score += 5
-
-    if not exists:
-        score += 15
-
-    return min(score, 100)
+def normalize_packages(raw_text):
+    raw_text = raw_text.replace("\n", ",")
+    pkgs = [p.strip() for p in raw_text.split(",") if p.strip()]
+    return list(dict.fromkeys(pkgs))  # preserve order
 
 
 def risk_label(score):
@@ -68,52 +48,139 @@ def risk_label(score):
     return "🟢 LOW"
 
 
-def normalize_packages(raw_text):
-    raw_text = raw_text.replace("\n", ",")
-    return [p.strip() for p in raw_text.split(",") if p.strip()]
+def risk_score(osv, exists):
+    score = 0
 
+    if osv["has_findings"]:
+        score += 70
 
-def chunk_list(items, size):
-    for i in range(0, len(items), size):
-        yield items[i:i + size]
+    if not exists:
+        score += 15
+
+    return min(score, 100)
 
 
 # =========================================================
-# OSV
+# REGISTRY DETECTION
 # =========================================================
-@st.cache_data(ttl=3600)
-def check_osv(package):
-    url = "https://api.osv.dev/v1/query"
 
-    payload = {
-        "package": {
-            "name": package,
-            "ecosystem": "npm"
-        }
-    }
+def detect_ecosystem(package):
+
+    npm = False
+    pypi = False
 
     try:
-        r = requests.post(url, json=payload, timeout=10)
-        data = r.json()
+        npm = requests.get(
+            f"https://registry.npmjs.org/{package}",
+            timeout=5
+        ).status_code == 200
+    except:
+        pass
 
+    try:
+        pypi = requests.get(
+            f"https://pypi.org/pypi/{package}/json",
+            timeout=5
+        ).status_code == 200
+    except:
+        pass
+
+    if npm and pypi:
+        return "Both"
+    if npm:
+        return "npm"
+    if pypi:
+        return "PyPI"
+    return "Unknown"
+
+
+# =========================================================
+# NPM
+# =========================================================
+
+@st.cache_data(ttl=3600)
+def check_npm(package):
+
+    try:
+        r = requests.get(f"https://registry.npmjs.org/{package}", timeout=10)
+
+        if r.status_code != 200:
+            return {"exists": False, "latest": None, "dependencies": {}}
+
+        data = r.json()
+        latest = data.get("dist-tags", {}).get("latest")
+        deps = data.get("versions", {}).get(latest, {}).get("dependencies", {}) or {}
+
+        return {
+            "exists": True,
+            "latest": latest,
+            "dependencies": deps
+        }
+
+    except:
+        return {"exists": False, "latest": None, "dependencies": {}}
+
+
+# =========================================================
+# PYPI
+# =========================================================
+
+@st.cache_data(ttl=3600)
+def check_pypi(package):
+
+    try:
+        r = requests.get(f"https://pypi.org/pypi/{package}/json", timeout=10)
+
+        if r.status_code != 200:
+            return {"exists": False, "latest": None, "summary": None}
+
+        data = r.json()["info"]
+
+        return {
+            "exists": True,
+            "latest": data.get("version"),
+            "summary": data.get("summary"),
+            "url": f"https://pypi.org/project/{package}/"
+        }
+
+    except:
+        return {"exists": False, "latest": None, "summary": None}
+
+
+# =========================================================
+# OSV CHECK
+# =========================================================
+
+@st.cache_data(ttl=3600)
+def check_osv(package, ecosystem):
+
+    try:
+        r = requests.post(
+            "https://api.osv.dev/v1/query",
+            json={"package": {"name": package, "ecosystem": ecosystem}},
+            timeout=10
+        )
+
+        data = r.json()
         vulns = data.get("vulns", [])
 
         if not vulns:
             return {
-                "is_malicious": False,
+                "has_findings": False,
                 "id": None,
                 "published": "-",
                 "summary": "-",
                 "aliases": [],
-                "references": [],
                 "affected": [],
-                "fixed": []
+                "fixed": [],
+                "references": []
             }
 
         v = vulns[0]
 
         affected = []
         fixed = []
+        refs = []
 
         for aff in v.get("affected", []):
             affected += aff.get("versions", [])
@@ -123,201 +190,153 @@ def check_osv(package):
                     if "fixed" in ev:
                         fixed.append(ev["fixed"])
 
-        refs = []
         for r_item in v.get("references", []):
-            if r_item.get("url"):
-                refs.append(r_item["url"])
+            url = r_item.get("url")
+            if url:
+                refs.append(url)
 
         return {
-            "is_malicious": True,
+            "has_findings": True,
             "id": v.get("id"),
             "published": v.get("published", "-"),
             "summary": v.get("summary") or v.get("details") or "-",
             "aliases": v.get("aliases", []),
-            "references": refs,
             "affected": list(set(affected)),
-            "fixed": list(set(fixed))
+            "fixed": list(set(fixed)),
+            "references": refs
         }
 
-    except Exception:
+    except:
         return {
-            "is_malicious": False,
+            "has_findings": False,
             "id": None,
             "published": "-",
             "summary": "-",
             "aliases": [],
-            "references": [],
             "affected": [],
-            "fixed": []
+            "fixed": [],
+            "references": []
         }
 
 
 # =========================================================
-# NPM REGISTRY (with dependencies)
+# OSV MERGE
 # =========================================================
-@st.cache_data(ttl=3600)
-def check_npm(package):
-    try:
-        r = requests.get(f"https://registry.npmjs.org/{package}", timeout=10)
 
-        if r.status_code != 200:
-            return {
-                "exists": False,
-                "latest": None,
-                "dependencies": {}
-            }
+def merge_osv(osv_list):
 
-        data = r.json()
-        latest = data.get("dist-tags", {}).get("latest")
+    merged = {
+        "has_findings": False,
+        "id": [],
+        "published": [],
+        "aliases": [],
+        "affected": [],
+        "fixed": [],
+        "references": [],
+        "summary": []
+    }
 
-        deps = {}
-        try:
-            deps = data.get("versions", {}).get(latest, {}).get("dependencies", {}) or {}
-        except Exception:
-            deps = {}
+    for o in osv_list:
 
-        return {
-            "exists": True,
-            "latest": latest,
-            "dependencies": deps
-        }
+        if o["has_findings"]:
+            merged["has_findings"] = True
 
-    except Exception:
-        return {
-            "exists": False,
-            "latest": None,
-            "dependencies": {}
-        }
+        merged["id"].append(o.get("id"))
+        merged["published"].append(o.get("published"))
+        merged["aliases"].extend(o.get("aliases", []))
+        merged["affected"].extend(o.get("affected", []))
+        merged["fixed"].extend(o.get("fixed", []))
+        merged["references"].extend(o.get("references", []))
+        merged["summary"].append(o.get("summary", ""))
 
-
-# =========================================================
-# DOWNLOADS
-# =========================================================
-@st.cache_data(ttl=3600)
-def check_downloads(package):
-    try:
-        r = requests.get(
-            f"https://api.npmjs.org/downloads/point/last-month/{package}",
-            timeout=10
-        )
-
-        if r.status_code != 200:
-            return {"downloads": 0}
-
-        return {"downloads": r.json().get("downloads", 0)}
-
-    except Exception:
-        return {"downloads": 0}
-
-
-# =========================================================
-# IOC EXPORTER
-# =========================================================
-def splunk_ioc_export(packages, npm_cache):
-    iocs = set()
-
-    for p in packages:
-        iocs.add(f"{p}*")
-
-        if expand_ioc and p in npm_cache:
-            deps = npm_cache[p].get("dependencies", {})
-            for d in list(deps.keys()):
-                iocs.add(f"{d}*")
-
-    return "\n".join(sorted(iocs))
+    return {
+        "has_findings": merged["has_findings"],
+        "id": ", ".join([x for x in merged["id"] if x]),
+        "published": ", ".join([x for x in merged["published"] if x and x != "-"]),
+        "aliases": list(set(merged["aliases"])),
+        "affected": list(set(merged["affected"])),
+        "fixed": list(set(merged["fixed"])),
+        "references": list(set(merged["references"])),
+        "summary": " | ".join([s for s in merged["summary"] if s and s != "-"]) or "-"
+    }
 
 
 # =========================================================
 # INPUT
 # =========================================================
-raw = st.text_area("Paste npm packages (comma or newline, 100–400+)")
+
+raw = st.text_area("Paste package names (comma or newline)")
 
 if raw:
 
     packages = normalize_packages(raw)
-    packages = list(set(packages))
 
     rows = []
-    npm_cache = {}
-
-    total_downloads = 0
-    high_risk = 0
-
-    BATCH_SIZE = 20
-    DELAY = 0.15
-
-    batches = list(chunk_list(packages, BATCH_SIZE))
-
     progress = st.progress(0)
     status = st.empty()
 
-    processed = 0
+    high_risk = 0
     total = len(packages)
 
-    # =====================================================
-    # PROCESSING
-    # =====================================================
-    for i, batch in enumerate(batches):
+    for i, pkg in enumerate(packages):
 
-        status.text(f"Processing batch {i+1}/{len(batches)}")
+        status.text(f"Processing {i+1}/{total}")
 
-        for pkg in batch:
+        ecosystem = detect_ecosystem(pkg)
 
-            osv = check_osv(pkg)
-            npm = check_npm(pkg)
-            dl = check_downloads(pkg)
+        npm = check_npm(pkg) if ecosystem in ["npm", "Both"] else {"exists": False, "latest": None, "dependencies": {}}
+        pypi = check_pypi(pkg) if ecosystem in ["PyPI", "Both"] else {"exists": False, "latest": None, "summary": None}
 
-            npm_cache[pkg] = npm
+        osv_results = []
 
-            downloads = dl["downloads"]
-            total_downloads += downloads
+        if ecosystem in ["npm", "Both"]:
+            osv_results.append(check_osv(pkg, "npm"))
 
-            score = risk_score(osv, downloads, npm["exists"])
+        if ecosystem in ["PyPI", "Both"]:
+            osv_results.append(check_osv(pkg, "PyPI"))
 
-            if score >= 70:
-                high_risk += 1
+        osv = merge_osv(osv_results)
 
-            dep_list = ""
-            if show_deps and npm["dependencies"]:
-                dep_list = ", ".join(list(npm["dependencies"].keys())[:15])
+        score = risk_score(osv, npm["exists"] or pypi["exists"])
 
-            rows.append({
-                "Package": pkg,
-                "Risk": risk_label(score),
-                "Score": score,
+        if score >= 70:
+            high_risk += 1
 
-                "OSV ID": osv["id"] or "-",
-                "Published": osv["published"],
-                "Summary": osv["summary"],
+        rows.append({
+            "Package": pkg,
+            "Ecosystem": ecosystem,
 
-                "Aliases": ", ".join(osv["aliases"]) if osv["aliases"] else "-",
+            "Risk": risk_label(score),
+            "Score": score,
 
-                "References": "\n".join(osv["references"]) if osv["references"] else "-",
+            "OSV ID": osv["id"],
+            "Published": osv["published"],
+            "Aliases": ", ".join(osv["aliases"]) if osv["aliases"] else "-",
 
-                "npm Exists": "YES" if npm["exists"] else "NO",
-                "Latest Version": npm["latest"] or "-",
+            "OSV Summary": osv["summary"],
 
-                "Downloads (30d)": format_number(downloads),
+            "References": "\n".join(osv["references"]) if osv["references"] else "-",
 
-                "Dependencies (1-level)": dep_list if show_deps else "-",
+            "Affected Versions": "\n".join(osv["affected"]) if osv["affected"] else "-",
+            "Fixed Versions": "\n".join(osv["fixed"]) if osv["fixed"] else "-",
 
-                "Affected Versions": "\n".join(osv["affected"]) if osv["affected"] else "-",
-                "Fixed Versions": "\n".join(osv["fixed"]) if osv["fixed"] else "-"
-            })
+            "npm Exists": "YES" if npm["exists"] else "-",
+            "npm Latest": npm["latest"] or "-",
 
-            processed += 1
-            progress.progress(processed / total)
+            "PyPI Exists": "YES" if pypi["exists"] else "-",
+            "PyPI Latest": pypi["latest"] or "-",
 
-        time.sleep(DELAY)
+            "PyPI Summary": pypi["summary"] or "-"
+        })
 
-    status.text("Analysis complete")
+        progress.progress((i + 1) / total)
+        time.sleep(0.05)
+
+    status.text("Complete")
 
     df = pd.DataFrame(rows)
 
-    # =====================================================
-    # METRICS
-    # =====================================================
-    col1, col2, col3 = st.columns(3)
+    col1, col2 = st.columns(2)
 
     with col1:
         st.metric("Packages", len(packages))
@@ -325,17 +344,11 @@ if raw:
     with col2:
         st.metric("High Risk", high_risk)
 
-    with col3:
-        st.metric("Total Exposure (30d)", format_number(total_downloads))
-
     st.divider()
 
     st.dataframe(df, use_container_width=True, height=650)
 
-    # =====================================================
-    # IOC EXPORT
-    # =====================================================
     st.divider()
-    st.subheader("Splunk IOC Export (Wildcard)")
+    st.subheader("Splunk IOC Export")
 
-    st.code(splunk_ioc_export(packages, npm_cache), language="text")
+    st.code("\n".join([f"{p}*" for p in packages]), language="text")
